@@ -9,4 +9,13 @@ edition = "2021"
 dirs = "5.0.1"
 iced = { version = "0.10.0", features = ["image", "smol"] }
 iced_runtime = "0.1.1"
-windows = { version = "0.52.0", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Com", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.52.0", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
+    "Win32_System_Com",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Shell",
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+] }
