@@ -1,23 +1,15 @@
 #![windows_subsystem = "windows"]
 
 use std::{
-    env,
-    ffi::OsStr,
-    fs::{self, DirEntry},
-    io, mem,
-    os::windows::ffi::OsStrExt,
-    path::{Path, PathBuf},
-    process, ptr,
+    convert::Infallible, env, ffi::OsStr, fs, io, mem, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, process, ptr
 };
 
 use dirs::data_local_dir;
 use iced::{
-    alignment::{Horizontal, Vertical},
-    theme::Theme,
-    widget::{image, Button, Container, Image, Space, Text},
-    window::{self},
-    Application, Command, Element, Length, Settings,
+    alignment::{Horizontal, Vertical}, futures::{channel::mpsc::Sender, future, stream, SinkExt}, subscription, theme::{self, Palette, Theme}, widget::{image, Button, Container, Image, Space, Text}, window::{self}, Application, Color, Command, Element, Length, Settings
 };
+use notify::event::{ModifyKind, RenameMode};
+use tokio::runtime::Handle;
 use windows::{
     core::PCWSTR,
     Win32::{
@@ -85,7 +77,7 @@ pub fn main() -> iced::Result {
 }
 
 struct Launcher {
-    folder_state: Vec<io::Result<DirEntry>>,
+    folder_state: Vec<io::Result<PathBuf>>,
     flags: LauncherFlags,
 }
 
@@ -98,6 +90,9 @@ struct LauncherFlags {
 #[derive(Debug, Clone)]
 enum Message {
     Open(PathBuf),
+    NewEntry(PathBuf),
+    EntryModified,
+    RemoveEntry(PathBuf),
     OpenFolder,
 }
 
@@ -167,6 +162,9 @@ impl Application for Launcher {
                     };
                     Win32::UI::Shell::ShellExecuteExW(&mut shell_info).unwrap();
                 };
+                return Command::single(iced_runtime::command::Action::Window(
+                    iced_runtime::window::Action::Close,
+                ));
             }
             Message::OpenFolder => {
                 if let Some(folder) = &self.flags.folder {
@@ -176,10 +174,18 @@ impl Application for Launcher {
                         .unwrap();
                 }
             }
+            Message::NewEntry(file_path) => {
+                self.folder_state.push(Ok(file_path));
+            },
+            Message::RemoveEntry(file_path) => {
+                self.folder_state.retain(|e| match e {
+                    Ok(path) => path != &file_path,
+                    Err(_) => true,
+                })
+            }
+            Message::EntryModified => {},
         }
-        Command::single(iced_runtime::command::Action::Window(
-            iced_runtime::window::Action::Close,
-        ))
+        Command::none()
     }
 
     fn view(&self) -> Element<Message> {
@@ -194,9 +200,8 @@ impl Application for Launcher {
                         iced::widget::Row::with_children(
                             row.iter()
                                 .map(|entry| match entry {
-                                    Ok(entry) => {
-                                        let file_path = entry.path();
-                                        let image_file_path = get_icon(&file_path);
+                                    Ok(file_path) => {
+                                        let image_handle = get_icon(&file_path);
                                         let file_name = file_path
                                             .file_stem()
                                             .unwrap_or_default()
@@ -205,7 +210,7 @@ impl Application for Launcher {
                                         Container::new(
                                             Button::new(
                                                 iced::widget::column!(
-                                                    Image::<image::Handle>::new(image_file_path)
+                                                    Image::<image::Handle>::new(image_handle)
                                                         .content_fit(iced::ContentFit::Contain)
                                                         .height(Length::Fixed(48.0))
                                                         .width(Length::Fill),
@@ -221,7 +226,7 @@ impl Application for Launcher {
                                                 )
                                                 .align_items(iced::Alignment::Center),
                                             )
-                                            .on_press(Message::Open(file_path))
+                                            .on_press(Message::Open(file_path.clone()))
                                             .width(Length::Fill)
                                             .height(Length::Fill),
                                         )
@@ -255,7 +260,15 @@ impl Application for Launcher {
     }
 
     fn theme(&self) -> Theme {
-        Theme::Dark
+        Theme::Custom(Box::new(theme::Custom::new(Palette {
+            primary: Color::from_rgb8(0x38, 0x38, 0x43),
+            ..Palette::DARK
+        })))
+    }
+
+    fn subscription(&self) -> iced::Subscription<Self::Message> {
+        let folder = self.flags.folder.clone();
+        subscription::channel(0, 16, move |sender| background(sender, folder))
     }
 }
 
@@ -360,12 +373,12 @@ unsafe fn icon_to_rgba_image(icon: HICON) -> image::Handle {
     image::Handle::from_pixels(width, height, buf)
 }
 
-fn init_state(flags: &LauncherFlags) -> Vec<Result<DirEntry, io::Error>> {
+fn init_state(flags: &LauncherFlags) -> Vec<Result<PathBuf, io::Error>> {
     match &flags.folder {
         Some(folder) => {
             let _ = fs::create_dir_all(folder);
             match fs::read_dir(folder) {
-                Ok(read_dir) => read_dir.collect::<Vec<_>>(),
+                Ok(read_dir) => read_dir.map(|r| r.map(|e| e.path())).collect::<Vec<_>>(),
                 Err(e) => {
                     vec![Err(e)]
                 }
@@ -375,4 +388,50 @@ fn init_state(flags: &LauncherFlags) -> Vec<Result<DirEntry, io::Error>> {
             vec![]
         }
     }
+}
+
+async fn background(sender: Sender<Message>, folder_to_monitor: Option<PathBuf>) -> Infallible {
+    use notify::{RecursiveMode, Watcher, event::EventKind};
+
+    struct FolderEventHandler {
+        sender: Sender<Message>,
+        runtime: tokio::runtime::Handle,
+    }
+    impl notify::EventHandler for FolderEventHandler {
+        fn handle_event(&mut self, event: notify::Result<notify::Event>) {
+            if let Ok(event) = event {
+                match event.kind {
+                    EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+                        let mut sender = self.sender.clone();
+                        self.runtime.spawn(async move {
+                            let mut s = stream::iter(event.paths.into_iter().map(Message::NewEntry).map(Ok));
+                            sender.send_all(&mut s).await.unwrap();
+                        });
+                    }
+                    EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
+                        let mut sender = self.sender.clone();
+                        self.runtime.spawn(async move {
+                            let mut s = stream::iter(event.paths.into_iter().map(Message::RemoveEntry).map(Ok));
+                            sender.send_all(&mut s).await.unwrap();
+                        });
+                    }
+                    EventKind::Modify(_) => {
+                        let mut sender = self.sender.clone();
+                        self.runtime.spawn(async move {
+                            sender.send(Message::EntryModified).await.unwrap();
+                        });
+                    }
+                    _ => {},
+                }
+            }
+        }
+    }
+    if let Some(folder) = folder_to_monitor {
+        let event_handler = FolderEventHandler { sender: sender.clone(), runtime: Handle::current() };
+        let mut watcher = notify::recommended_watcher(event_handler).unwrap();
+        watcher.watch(&folder, RecursiveMode::Recursive).unwrap();
+        future::pending().await
+
+    }
+    future::pending().await
 }

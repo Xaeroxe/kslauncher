@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["butts"],
+            "args": ["Games"],
             "cwd": "${workspaceFolder}"
         },
         {
