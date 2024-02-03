@@ -9,7 +9,6 @@ use iced::{
     alignment::{Horizontal, Vertical}, futures::{channel::mpsc::Sender, future, stream, SinkExt}, subscription, theme::{self, Palette, Theme}, widget::{image, Button, Container, Image, Space, Text}, window::{self}, Application, Color, Command, Element, Length, Settings
 };
 use notify::event::{ModifyKind, RenameMode};
-use tokio::runtime::Handle;
 use windows::{
     core::PCWSTR,
     Win32::{
@@ -26,7 +25,7 @@ use windows::{
                 SHGetFileInfoW, SHGetImageList, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_SYSICONINDEX,
                 SHIL_EXTRALARGE,
             },
-            WindowsAndMessaging::HICON,
+            WindowsAndMessaging::{DestroyIcon, HICON},
         },
     },
 };
@@ -292,7 +291,9 @@ fn get_icon(file_path: &Path) -> image::Handle {
             let icon = extra_large_image_list
                 .GetIcon(psfi.iIcon, ILD_TRANSPARENT.0)
                 .unwrap();
-            return icon_to_rgba_image(icon);
+            let image = icon_to_rgba_image(icon);
+            DestroyIcon(icon).unwrap();
+            return image;
         } else {
             unimplemented!()
         }
@@ -395,7 +396,6 @@ async fn background(sender: Sender<Message>, folder_to_monitor: Option<PathBuf>)
 
     struct FolderEventHandler {
         sender: Sender<Message>,
-        runtime: tokio::runtime::Handle,
     }
     impl notify::EventHandler for FolderEventHandler {
         fn handle_event(&mut self, event: notify::Result<notify::Event>) {
@@ -403,23 +403,23 @@ async fn background(sender: Sender<Message>, folder_to_monitor: Option<PathBuf>)
                 match event.kind {
                     EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
                         let mut sender = self.sender.clone();
-                        self.runtime.spawn(async move {
+                        smol::spawn(async move {
                             let mut s = stream::iter(event.paths.into_iter().map(Message::NewEntry).map(Ok));
                             sender.send_all(&mut s).await.unwrap();
-                        });
+                        }).detach();
                     }
                     EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
                         let mut sender = self.sender.clone();
-                        self.runtime.spawn(async move {
+                        smol::spawn(async move {
                             let mut s = stream::iter(event.paths.into_iter().map(Message::RemoveEntry).map(Ok));
                             sender.send_all(&mut s).await.unwrap();
-                        });
+                        }).detach();
                     }
                     EventKind::Modify(_) => {
                         let mut sender = self.sender.clone();
-                        self.runtime.spawn(async move {
+                        smol::spawn(async move {
                             sender.send(Message::EntryModified).await.unwrap();
-                        });
+                        }).detach();
                     }
                     _ => {},
                 }
@@ -427,11 +427,10 @@ async fn background(sender: Sender<Message>, folder_to_monitor: Option<PathBuf>)
         }
     }
     if let Some(folder) = folder_to_monitor {
-        let event_handler = FolderEventHandler { sender: sender.clone(), runtime: Handle::current() };
+        let event_handler = FolderEventHandler { sender: sender.clone() };
         let mut watcher = notify::recommended_watcher(event_handler).unwrap();
         watcher.watch(&folder, RecursiveMode::Recursive).unwrap();
         future::pending().await
-
     }
     future::pending().await
 }
