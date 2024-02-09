@@ -4,7 +4,9 @@ use std::{
     convert::Infallible,
     env,
     ffi::OsStr,
-    fs, io, mem,
+    fs,
+    hash::Hasher,
+    io, mem,
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     process, ptr,
@@ -13,13 +15,13 @@ use std::{
 use dirs::data_local_dir;
 use iced::{
     alignment::{Horizontal, Vertical},
-    futures::{channel::mpsc::Sender, future, stream, SinkExt},
+    futures::{channel::mpsc::Sender, future, stream, SinkExt, StreamExt},
     subscription,
     theme::{self, Palette, Theme},
     widget::{image, Button, Container, Image, Space, Text},
-    window::{self},
-    Application, Color, Command, Element, Length, Settings, Subscription,
+    window, Application, Color, Command, Element, Length, Settings, Subscription,
 };
+use iced_runtime::futures::subscription::Recipe;
 use notify::event::{ModifyKind, RenameMode};
 use windows::{
     core::PCWSTR,
@@ -61,10 +63,7 @@ pub fn main() -> iced::Result {
         match r {
             Ok(()) => Ok(()),
             Err(e) => Launcher::run(Settings {
-                window: window::Settings {
-                    decorations: false,
-                    ..Default::default()
-                },
+                window: window::Settings::default(),
                 flags: LauncherFlags {
                     file_move_error: Some(e),
                     folder: Some(folder),
@@ -74,10 +73,7 @@ pub fn main() -> iced::Result {
         }
     } else {
         Launcher::run(Settings {
-            window: window::Settings {
-                decorations: true,
-                ..Default::default()
-            },
+            window: window::Settings::default(),
             flags: LauncherFlags {
                 folder,
                 ..Default::default()
@@ -105,7 +101,7 @@ enum Message {
     EntryModified,
     RemoveEntry(PathBuf),
     OpenFolder,
-    Event(iced::Event),
+    FileDropped(PathBuf),
 }
 
 impl Application for Launcher {
@@ -190,13 +186,10 @@ impl Application for Launcher {
                 Err(_) => true,
             }),
             Message::EntryModified => {}
-            Message::Event(e) => {
-                if let iced::Event::Window(window::Event::FileDropped(path)) = e {
-                    if let Some((folder, file_name)) =
-                        self.flags.folder.as_ref().zip(path.file_name())
-                    {
-                        let _ = fs::rename(&path, folder.join(file_name));
-                    }
+            Message::FileDropped(path) => {
+                if let Some((folder, file_name)) = self.flags.folder.as_ref().zip(path.file_name())
+                {
+                    let _ = fs::rename(&path, folder.join(file_name));
                 }
             }
         }
@@ -204,6 +197,9 @@ impl Application for Launcher {
     }
 
     fn view(&self) -> Element<Message> {
+        if self.folder_state.is_empty() {
+            return Text::new("This folder is empty.").into();
+        }
         let content: Element<Message> = match &self.flags.file_move_error {
             Some(e) => Text::new(format!("Failed to add file to launcher folder: {e}")).into(),
             None => iced::widget::Column::with_children(
@@ -283,9 +279,30 @@ impl Application for Launcher {
     }
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
+        struct RecipeDragNDrop;
+        impl Recipe for RecipeDragNDrop {
+            type Output = PathBuf;
+
+            fn hash(&self, state: &mut iced_runtime::core::Hasher) {
+                state.write(b"DragNDrop");
+            }
+
+            fn stream(
+                self: Box<Self>,
+                input: iced_runtime::futures::subscription::EventStream,
+            ) -> iced_runtime::futures::BoxStream<Self::Output> {
+                Box::pin(input.filter_map(|(e, _status)| async move {
+                    if let iced::Event::Window(window::Event::FileDropped(path)) = e {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                }))
+            }
+        }
         let folder = self.flags.folder.clone();
         Subscription::batch([
-            subscription::events().map(Message::Event),
+            Subscription::from_recipe(RecipeDragNDrop).map(Message::FileDropped),
             subscription::channel(0, 16, move |sender| background(sender, folder)),
         ])
     }
