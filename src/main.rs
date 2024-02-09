@@ -224,10 +224,12 @@ impl Application for Launcher {
                                         Container::new(
                                             Button::new(
                                                 iced::widget::column!(
-                                                    Image::<image::Handle>::new(image_handle.clone())
-                                                        .content_fit(iced::ContentFit::Contain)
-                                                        .height(Length::Fixed(48.0))
-                                                        .width(Length::Fill),
+                                                    Image::<image::Handle>::new(
+                                                        image_handle.clone()
+                                                    )
+                                                    .content_fit(iced::ContentFit::Contain)
+                                                    .height(Length::Fixed(48.0))
+                                                    .width(Length::Fill),
                                                     Text::new(file_name.clone())
                                                         .vertical_alignment(
                                                             iced::alignment::Vertical::Center
@@ -291,11 +293,8 @@ impl Application for Launcher {
 
 fn get_icon(file_path: &Path) -> image::Handle {
     unsafe {
-        Win32::System::Com::CoInitializeEx(
-            None,
-            COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
-        )
-        .unwrap();
+        Win32::System::Com::CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+            .unwrap();
         let mut psfi = SHFILEINFOW::default();
         let file_path_wide = file_path
             .as_os_str()
