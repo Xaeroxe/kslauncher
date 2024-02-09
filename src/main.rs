@@ -1,7 +1,6 @@
 #![windows_subsystem = "windows"]
 
 use std::{
-    collections::HashMap,
     convert::Infallible,
     env,
     ffi::OsStr,
@@ -9,7 +8,6 @@ use std::{
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     process, ptr,
-    sync::Mutex,
 };
 
 use dirs::data_local_dir;
@@ -90,9 +88,8 @@ pub fn main() -> iced::Result {
 }
 
 struct Launcher {
-    folder_state: Vec<io::Result<PathBuf>>,
+    folder_state: Vec<io::Result<(PathBuf, image::Handle)>>,
     flags: LauncherFlags,
-    icon_cache: Mutex<HashMap<PathBuf, image::Handle>>,
 }
 
 #[derive(Default)]
@@ -126,7 +123,6 @@ impl Application for Launcher {
             Launcher {
                 folder_state: state,
                 flags,
-                icon_cache: Mutex::new(HashMap::new()),
             },
             Command::none(),
         )
@@ -154,11 +150,6 @@ impl Application for Launcher {
                     .chain(Some(0))
                     .collect::<Vec<u16>>();
                 unsafe {
-                    Win32::System::Com::CoInitializeEx(
-                        None,
-                        COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
-                    )
-                    .unwrap();
                     let mut shell_info = SHELLEXECUTEINFOW {
                         cbSize: mem::size_of::<SHELLEXECUTEINFOW>() as u32,
                         fMask: 0,
@@ -191,10 +182,11 @@ impl Application for Launcher {
                 }
             }
             Message::NewEntry(file_path) => {
-                self.folder_state.push(Ok(file_path));
+                let icon = get_icon(&file_path);
+                self.folder_state.push(Ok((file_path, icon)));
             }
             Message::RemoveEntry(file_path) => self.folder_state.retain(|e| match e {
-                Ok(path) => path != &file_path,
+                Ok((path, _handle)) => path != &file_path,
                 Err(_) => true,
             }),
             Message::EntryModified => {}
@@ -223,14 +215,7 @@ impl Application for Launcher {
                         iced::widget::Row::with_children(
                             row.iter()
                                 .map(|entry| match entry {
-                                    Ok(file_path) => {
-                                        let image_handle = self
-                                            .icon_cache
-                                            .lock()
-                                            .unwrap()
-                                            .entry(file_path.clone())
-                                            .or_insert_with(|| get_icon(file_path))
-                                            .clone();
+                                    Ok((file_path, image_handle)) => {
                                         let file_name = file_path
                                             .file_stem()
                                             .unwrap_or_default()
@@ -239,7 +224,7 @@ impl Application for Launcher {
                                         Container::new(
                                             Button::new(
                                                 iced::widget::column!(
-                                                    Image::<image::Handle>::new(image_handle)
+                                                    Image::<image::Handle>::new(image_handle.clone())
                                                         .content_fit(iced::ContentFit::Contain)
                                                         .height(Length::Fixed(48.0))
                                                         .width(Length::Fill),
@@ -306,6 +291,11 @@ impl Application for Launcher {
 
 fn get_icon(file_path: &Path) -> image::Handle {
     unsafe {
+        Win32::System::Com::CoInitializeEx(
+            None,
+            COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
+        )
+        .unwrap();
         let mut psfi = SHFILEINFOW::default();
         let file_path_wide = file_path
             .as_os_str()
@@ -407,12 +397,20 @@ unsafe fn icon_to_rgba_image(icon: HICON) -> image::Handle {
     image::Handle::from_pixels(width, height, buf)
 }
 
-fn init_state(flags: &LauncherFlags) -> Vec<Result<PathBuf, io::Error>> {
+fn init_state(flags: &LauncherFlags) -> Vec<Result<(PathBuf, image::Handle), io::Error>> {
     match &flags.folder {
         Some(folder) => {
             let _ = fs::create_dir_all(folder);
             match fs::read_dir(folder) {
-                Ok(read_dir) => read_dir.map(|r| r.map(|e| e.path())).collect::<Vec<_>>(),
+                Ok(read_dir) => read_dir
+                    .map(|r| {
+                        r.map(|e| {
+                            let path = e.path();
+                            let icon = get_icon(&path);
+                            (path, icon)
+                        })
+                    })
+                    .collect::<Vec<_>>(),
                 Err(e) => {
                     vec![Err(e)]
                 }
