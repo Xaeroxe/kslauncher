@@ -3,10 +3,7 @@ name: Release
 permissions:
   contents: write
 
-on:
-  push:
-    tags:
-      - "[0-9]+.*:"
+on: workflow_dispatch
 
 jobs:
   create-release:
