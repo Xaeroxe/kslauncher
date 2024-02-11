@@ -3,11 +3,14 @@ name: Release
 permissions:
   contents: write
 
-on: workflow_dispatch
+on:
+  push:
+    tags:
+      - v[0-9]+.*
 
 jobs:
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/create-gh-release-action@v1
@@ -17,13 +20,13 @@ jobs:
 
   upload-assets:
     needs: create-release
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           # (required) Comma-separated list of binary names (non-extension portion of filename) to build and upload.
           # Note that glob pattern is not supported yet.
-          bin: ...
+          bin: kslauncher
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.TOKEN }}
