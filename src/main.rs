@@ -9,7 +9,7 @@ use std::{
     io, mem,
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
-    process, ptr,
+    process, ptr, sync::Arc,
 };
 
 use dirs::data_local_dir;
@@ -19,7 +19,7 @@ use iced::{
     subscription,
     theme::{self, Palette, Theme},
     widget::{image, Button, Container, Image, Space, Text},
-    window, Application, Color, Command, Element, Length, Settings, Subscription,
+    window::{self, Id}, Application, Color, Command, Element, Length, Settings, Subscription,
 };
 use iced_runtime::futures::subscription::Recipe;
 use notify::event::{ModifyKind, RenameMode};
@@ -166,7 +166,7 @@ impl Application for Launcher {
                     Win32::UI::Shell::ShellExecuteExW(&mut shell_info).unwrap();
                 };
                 return Command::single(iced_runtime::command::Action::Window(
-                    iced_runtime::window::Action::Close,
+                    iced_runtime::window::Action::Close(Id::MAIN),
                 ));
             }
             Message::OpenFolder => {
@@ -272,7 +272,7 @@ impl Application for Launcher {
     }
 
     fn theme(&self) -> Theme {
-        Theme::Custom(Box::new(theme::Custom::new(Palette {
+        Theme::Custom(Arc::new(theme::Custom::new("Modified Dark".to_string(), Palette {
             primary: Color::from_rgb8(0x38, 0x38, 0x43),
             ..Palette::DARK
         })))
@@ -292,7 +292,7 @@ impl Application for Launcher {
                 input: iced_runtime::futures::subscription::EventStream,
             ) -> iced_runtime::futures::BoxStream<Self::Output> {
                 Box::pin(input.filter_map(|(e, _status)| async move {
-                    if let iced::Event::Window(window::Event::FileDropped(path)) = e {
+                    if let iced::Event::Window(_id, window::Event::FileDropped(path)) = e {
                         Some(path)
                     } else {
                         None

@@ -8,8 +8,8 @@ license = "MIT"
 
 [dependencies]
 dirs = "5.0.1"
-iced = { version = "0.10.0", default-features = false, features = ["image", "smol"] }
-iced_runtime = { version = "0.1.1", default-features = false }
+iced = { version = "0.12.0", default-features = false, features = ["image", "smol"] }
+iced_runtime = { version = "0.12.0", default-features = false }
 notify = "6.1.1"
 smol = "1.3.0"
 windows = { version = "0.52.0", features = [
